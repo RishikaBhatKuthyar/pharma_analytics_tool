@@ -29,9 +29,9 @@ function Message({ msg }) {
       <div style={styles.botMessageWrapper}>
         <div style={styles.botIcon}>⚗️</div>
         <div style={styles.loadingBubble}>
-          <span style={styles.dot} />
-          <span style={{ ...styles.dot, animationDelay: "0.2s" }} />
-          <span style={{ ...styles.dot, animationDelay: "0.4s" }} />
+          <span className="dot" />
+          <span className="dot" />
+          <span className="dot" />
         </div>
       </div>
     );
@@ -56,18 +56,34 @@ function Message({ msg }) {
         {/* Plain English Answer */}
         <div style={styles.answerBubble}>{msg.answer}</div>
 
-        {/* Collapsible SQL Section */}
-        <button
-          style={styles.toggleButton}
-          onClick={() => setShowSQL(!showSQL)}
-        >
-          {showSQL ? "▼" : "▶"} SQL Query
-        </button>
-        {showSQL && (
-          <pre style={styles.sqlBlock}>{msg.sql}</pre>
+        {/* Single number highlight — shows big number when result is one row one column */}
+        {msg.data && msg.data.length === 1 && Object.keys(msg.data[0]).length === 1 && (
+          <div style={styles.bigNumberCard}>
+            <div style={styles.bigNumber}>
+              {Object.values(msg.data[0])[0].toLocaleString()}
+            </div>
+            <div style={styles.bigNumberLabel}>
+              {Object.keys(msg.data[0])[0].replace(/_/g, " ").toUpperCase()}
+            </div>
+          </div>
         )}
 
-        {/* Collapsible Data Table */}
+        {/* Collapsible SQL Section — only show if SQL exists */}
+        {msg.sql && msg.sql.length > 0 && (
+          <>
+            <button
+              style={styles.toggleButton}
+              onClick={() => setShowSQL(!showSQL)}
+            >
+              {showSQL ? "▼" : "▶"} SQL Query
+            </button>
+            {showSQL && (
+              <pre style={styles.sqlBlock}>{msg.sql}</pre>
+            )}
+          </>
+        )}
+
+        {/* Collapsible Data Table — only show if data exists */}
         {msg.data && msg.data.length > 0 && (
           <>
             <button
@@ -79,6 +95,7 @@ function Message({ msg }) {
             {showData && <DataTable data={msg.data} />}
           </>
         )}
+
       </div>
     </div>
   );
@@ -108,10 +125,12 @@ function DataTable({ data }) {
             <tr key={i} style={i % 2 === 0 ? styles.trEven : styles.trOdd}>
               {columns.map((col) => (
                 <td key={col} style={styles.td}>
-                  {typeof row[col] === "number"
+                  {row[col] === null || row[col] === undefined
+                    ? "0"
+                    : typeof row[col] === "number"
                     ? Number.isInteger(row[col])
                       ? row[col].toLocaleString()
-                      : row[col].toFixed(1)
+                      : parseFloat(row[col].toFixed(1)).toLocaleString()
                     : row[col]}
                 </td>
               ))}
@@ -154,36 +173,71 @@ function SuggestedQuestions({ onSelect }) {
 // ─── Main App Component ──────────────────────────────────────────────────────
 
 export default function App() {
-  const [messages, setMessages] = useState([]);
+  // Load messages from localStorage on startup — persists across page refresh
+  const [messages, setMessages] = useState(() => {
+    const saved = localStorage.getItem("pharma_chat_messages");
+    return saved ? JSON.parse(saved) : [];
+  });
+
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef(null);
+
+  // Load conversation history from localStorage on startup
+  const [conversationHistory, setConversationHistory] = useState(() => {
+    const saved = localStorage.getItem("pharma_chat_history");
+    return saved ? JSON.parse(saved) : [];
+  });
 
   // Auto scroll to bottom when new messages arrive
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Save messages to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem("pharma_chat_messages", JSON.stringify(messages));
+  }, [messages]);
+
+  // Save conversation history to localStorage whenever it changes
+  useEffect(() => {
+    localStorage.setItem("pharma_chat_history", JSON.stringify(conversationHistory));
+  }, [conversationHistory]);
+
   // Handle question submission
   const handleSubmit = async (question) => {
     const q = question || input.trim();
     if (!q || loading) return;
 
-    // Add user message to chat
     setMessages((prev) => [...prev, { type: "user", text: q }]);
     setInput("");
     setLoading(true);
-
-    // Add loading indicator
     setMessages((prev) => [...prev, { type: "loading" }]);
 
+    // Timeout safety net — show message if no response in 35 seconds
+    const timeoutId = setTimeout(() => {
+      setMessages((prev) => [
+        ...prev.filter((m) => m.type !== "loading"),
+        {
+          type: "error",
+          text: "This is taking longer than expected. Please try again or rephrase your question.",
+        },
+      ]);
+      setLoading(false);
+    }, 35000);
+
     try {
-      // Call FastAPI backend — real Claude AI pipeline
+      // Send question AND conversation history to backend
       const response = await axios.post(`${API_URL}/ask`, {
         question: q,
+        conversation_history: conversationHistory,
       });
 
-      // Remove loading indicator and add answer
+      clearTimeout(timeoutId);
+
+      // Update conversation history for follow-up questions
+      setConversationHistory(response.data.conversation_history);
+
       setMessages((prev) => [
         ...prev.filter((m) => m.type !== "loading"),
         {
@@ -194,13 +248,14 @@ export default function App() {
         },
       ]);
     } catch (err) {
-      // Remove loading and show error
+      clearTimeout(timeoutId);
+      const errorMsg = err.response?.data?.detail?.includes("timed out")
+        ? "Request timed out. Please try a simpler question."
+        : "Something went wrong. Please try again.";
+
       setMessages((prev) => [
         ...prev.filter((m) => m.type !== "loading"),
-        {
-          type: "error",
-          text: "Something went wrong. Please try again.",
-        },
+        { type: "error", text: errorMsg },
       ]);
     } finally {
       setLoading(false);
@@ -218,13 +273,28 @@ export default function App() {
   return (
     <div style={styles.appContainer}>
 
-      {/* Header */}
-      <div style={styles.header}>
+    {/* Header */}
+    <div style={styles.header}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h1 style={styles.headerTitle}>⚗️ Pharma Analytics</h1>
-        <p style={styles.headerSubtitle}>
-          Ask anything about your sales data in plain English
-        </p>
+        {messages.length > 0 && (
+          <button
+            style={styles.clearButton}
+            onClick={() => {
+              setMessages([]);
+              setConversationHistory([]);
+              localStorage.removeItem("pharma_chat_history");
+              localStorage.removeItem("pharma_chat_messages");
+            }}
+          >
+            Clear Chat
+          </button>
+        )}
       </div>
+      <p style={styles.headerSubtitle}>
+        Ask anything about your sales data in plain English
+      </p>
+    </div>
 
       {/* Chat Area */}
       <div style={styles.chatArea}>
@@ -346,14 +416,14 @@ const styles = {
     gap: "6px",
     alignItems: "center",
   },
-  dot: {
-    width: "8px",
-    height: "8px",
-    backgroundColor: "#e8c97a",
-    borderRadius: "50%",
-    display: "inline-block",
-    animation: "bounce 0.8s infinite",
-  },
+  // dot: {
+  //   width: "8px",
+  //   height: "8px",
+  //   backgroundColor: "#e8c97a",
+  //   borderRadius: "50%",
+  //   display: "inline-block",
+  //   animation: "bounce 0.8s infinite",
+  // },
   errorBubble: {
     backgroundColor: "#2d1a1a",
     border: "1px solid #5c2a2a",
@@ -466,4 +536,33 @@ const styles = {
     cursor: "pointer",
     transition: "opacity 0.2s",
   },
+  clearButton: {
+  backgroundColor: "transparent",
+  border: "1px solid #2a2d36",
+  color: "#6b7280",
+  padding: "6px 12px",
+  borderRadius: "6px",
+  cursor: "pointer",
+  fontSize: "12px",
+},
+bigNumberCard: {
+  backgroundColor: "#1a1d26",
+  border: "1px solid #e8c97a",
+  borderRadius: "12px",
+  padding: "20px 28px",
+  display: "inline-flex",
+  flexDirection: "column",
+  alignItems: "center",
+  gap: "4px",
+},
+bigNumber: {
+  fontSize: "36px",
+  fontWeight: "700",
+  color: "#e8c97a",
+},
+bigNumberLabel: {
+  fontSize: "11px",
+  color: "#6b7280",
+  letterSpacing: "1px",
+},
 };

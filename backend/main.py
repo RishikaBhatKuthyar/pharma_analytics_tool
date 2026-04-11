@@ -1,84 +1,125 @@
 # main.py
-# This is the FastAPI server — the bridge between the frontend and the AI pipeline.
-# It exposes one endpoint: POST /ask
-# The frontend sends a question, this returns an answer.
+# FastAPI server — bridge between React frontend and AI pipeline.
+# Handles conversation history for follow-up questions.
+# Includes timeout handling and rate limiting.
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import List, Optional
+import asyncio
 from agent import ask
 import uvicorn
 
-# Initialize the FastAPI app
 app = FastAPI(
     title="Pharma Analytics Tool",
     description="Natural language interface for pharma sales data",
     version="1.0.0"
 )
 
-# CORS middleware — allows the React/Streamlit frontend to talk to this backend
-# Without this, the browser will block requests from the frontend
+# CORS — allows React frontend to talk to this backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],      # in production, replace * with your frontend URL
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# Request model — defines what the frontend must send
+# Message format for conversation history
+class ConversationMessage(BaseModel):
+    role: str     # "user" or "assistant"
+    content: str  # the message text
+
+
+# Request model — question + full conversation history
 class QuestionRequest(BaseModel):
-    question: str  # the plain English question from the user
+    question: str
+    conversation_history: Optional[List[ConversationMessage]] = []
 
 
-# Response model — defines what we send back to the frontend
+# Response model
 class AnswerResponse(BaseModel):
-    answer: str    # plain English summary from Claude
-    sql: str       # the generated SQL query (shown in UI for transparency)
-    data: list     # raw rows from DuckDB (shown as table in UI)
+    answer: str
+    sql: str
+    data: list
+    conversation_history: list
 
 
-# Health check endpoint — useful to verify the server is running
+# Health check
 @app.get("/")
 def health_check():
-    """Simple health check — visit http://localhost:8000 to confirm server is running"""
     return {"status": "running", "message": "Pharma Analytics API is live"}
 
 
-# Main endpoint — receives question, returns answer
+# Main endpoint
 @app.post("/ask", response_model=AnswerResponse)
 async def ask_question(request: QuestionRequest):
     """
-    Main endpoint. Receives a plain English question,
-    runs it through the full AI pipeline, returns the answer.
+    Receives a question + conversation history.
+    Returns answer + updated conversation history.
+    Times out after 30 seconds with a helpful message.
     """
 
-    # Validate the question is not empty
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
 
-    try:
-        # Call the full pipeline from agent.py
-        result = ask(request.question)
+    # Convert conversation history from Pydantic models to plain dicts
+    history = [
+        {"role": msg.role, "content": msg.content}
+        for msg in request.conversation_history
+    ]
 
-        # Return structured response
+    try:
+        # Wrap in asyncio timeout — returns error after 30 seconds
+        result = await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(
+                None, lambda: ask(request.question, history)
+            ),
+            timeout=30.0
+        )
+
         return AnswerResponse(
             answer=result["answer"],
             sql=result["sql"],
-            data=result["data"]
+            data=result["data"],
+            conversation_history=result["conversation_history"]
+        )
+
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail="Request timed out after 30 seconds. Please try a simpler question."
         )
 
     except Exception as e:
-        # If anything goes wrong, return a clean error message
-        raise HTTPException(status_code=500, detail=str(e))
+        error_message = str(e)
+
+        # Give specific messages for known error types
+        if "authentication" in error_message.lower() or "401" in error_message:
+            raise HTTPException(
+                status_code=401,
+                detail="API key error. Please check your Anthropic API key."
+            )
+        elif "rate_limit" in error_message.lower() or "429" in error_message:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many requests. Please wait a moment and try again."
+            )
+        elif "overloaded" in error_message.lower():
+            raise HTTPException(
+                status_code=503,
+                detail="Claude API is temporarily busy. Please try again in a few seconds."
+            )
+        else:
+            raise HTTPException(status_code=500, detail=error_message)
 
 
-# Run the server when this file is executed directly
 if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=8000,
-        reload=True   # auto-restart when you save changes during development
+        reload=True
     )
