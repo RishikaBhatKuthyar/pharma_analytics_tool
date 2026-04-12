@@ -6,7 +6,7 @@ import { useState, useRef, useEffect } from "react";
 import axios from "axios";
 
 // API base URL — points to our FastAPI backend
-const API_URL = "http://localhost:8000";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 // ─── Individual Message Component ───────────────────────────────────────────
 
