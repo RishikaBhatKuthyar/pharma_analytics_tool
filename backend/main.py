@@ -37,7 +37,6 @@ class ConversationMessage(BaseModel):
 # class QuestionRequest(BaseModel):
 #     question: str
 #     conversation_history: Optional[List[ConversationMessage]] = []
-# TO this
 class QuestionRequest(BaseModel):
     question: str
     session_id: Optional[str] = None          # Redis session ID — new
@@ -58,51 +57,43 @@ def health_check():
     return {"status": "running", "message": "Pharma Analytics API is live"}
 
 
+
 # Main endpoint
 @app.post("/ask", response_model=AnswerResponse)
 async def ask_question(request: QuestionRequest):
     """
-    Receives a question + conversation history.
+    Receives a question + session_id.
     Returns answer + updated conversation history.
     Times out after 30 seconds with a helpful message.
     """
 
-    # if not request.question.strip():
-    #     raise HTTPException(status_code=400, detail="Question cannot be empty")
+    # Validate question is not empty
+    if not request.question.strip():
+        raise HTTPException(status_code=400, detail="Question cannot be empty")
 
-    # # Convert conversation history from Pydantic models to plain dicts
-    # history = [
-    #     {"role": msg.role, "content": msg.content}
-    #     for msg in request.conversation_history
-    # ]
+    # Prevent extremely long inputs that could cause token overflow
+    if len(request.question) > 500:
+        raise HTTPException(status_code=400, detail="Question too long. Please keep it under 500 characters.")
 
-    # try:
-    #     # Wrap in asyncio timeout — returns error after 30 seconds
-    #     result = await asyncio.wait_for(
-    #         asyncio.get_event_loop().run_in_executor(
-    #             None, lambda: ask(request.question, history)
-    #         ),
-    #         timeout=30.0
-    #     )
-
+    # Convert conversation history from Pydantic models to plain dicts
     history = [
         {"role": msg.role, "content": msg.content}
         for msg in request.conversation_history
     ]
 
-    # Pass session_id to agent if provided
-    # Redis will handle history server-side
-    result = await asyncio.wait_for(
-        asyncio.get_event_loop().run_in_executor(
-            None, lambda: ask(
-                request.question,
-                session_id=request.session_id,   # new — Redis session
-                conversation_history=history      # kept for backwards compatibility
-            )
-        ),
-        timeout=30.0
-    )
     try:
+        # Wrap in asyncio timeout — returns error after 30 seconds
+        result = await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(
+                None, lambda: ask(
+                    request.question,
+                    session_id=request.session_id,
+                    conversation_history=history
+                )
+            ),
+            timeout=30.0
+        )
+
         return AnswerResponse(
             answer=result["answer"],
             sql=result["sql"],
@@ -119,7 +110,6 @@ async def ask_question(request: QuestionRequest):
     except Exception as e:
         error_message = str(e)
 
-        # Give specific messages for known error types
         if "authentication" in error_message.lower() or "401" in error_message:
             raise HTTPException(
                 status_code=401,

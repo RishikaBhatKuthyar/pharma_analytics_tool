@@ -342,20 +342,79 @@ def ask(user_question: str, session_id: str = None, conversation_history: list =
     sql = generate_sql(user_question, conversation_history)
     print(f"📝 SQL:\n{sql}\n")
 
-    # Step 2 — Execute SQL
+    # # Step 2 — Execute SQL
+    # print("🗄️  Running query...")
+    # try:
+    #     results = run_sql(sql)
+    #     print(f"📊 Results: {len(results)} rows returned\n")
+    # except Exception as e:
+    #     print(f"❌ SQL Error: {e}")
+    #     return {
+    #         "answer": "I had trouble running that query. Try rephrasing your question or adding a specific time period like 'in Q4 2024'.",
+    #         "sql": sql,
+    #         "data": [],
+    #         "conversation_history": conversation_history
+    #     }
+ # Step 2 — Execute SQL with one automatic retry
     print("🗄️  Running query...")
     try:
         results = run_sql(sql)
         print(f"📊 Results: {len(results)} rows returned\n")
-    except Exception as e:
-        print(f"❌ SQL Error: {e}")
-        return {
-            "answer": "I had trouble running that query. Try rephrasing your question or adding a specific time period like 'in Q4 2024'.",
-            "sql": sql,
-            "data": [],
-            "conversation_history": conversation_history
-        }
 
+    except Exception as e:
+        print(f"❌ SQL Error on first attempt: {e}")
+        print("🔄 Retrying with error context...")
+
+        retry_messages = conversation_history + [
+            {
+                "role": "user",
+                "content": f"Convert this question to SQL: {user_question}"
+            },
+            {
+                "role": "assistant",
+                "content": sql
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"That SQL failed with this error: {str(e)}\n\n"
+                    f"Please fix the SQL and return only the corrected query. "
+                    f"No explanation, no backticks, just the fixed SQL."
+                )
+            }
+        ]
+
+        try:
+            retry_response = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=1000,
+                system=[
+                    {
+                        "type": "text",
+                        "text": SCHEMA_PROMPT,
+                        "cache_control": {"type": "ephemeral"}
+                    }
+                ],
+                messages=retry_messages
+            )
+
+            corrected_sql = clean_sql(retry_response.content[0].text.strip())
+            print(f"📝 Corrected SQL:\n{corrected_sql}\n")
+
+            results = run_sql(corrected_sql)
+            sql = corrected_sql
+            print(f"📊 Results after retry: {len(results)} rows returned\n")
+
+        except Exception as retry_error:
+            print(f"❌ Retry also failed: {retry_error}")
+            return {
+                "answer": "I had trouble running that query even after correcting it. Try rephrasing your question or being more specific.",
+                "sql": sql,
+                "data": [],
+                "conversation_history": conversation_history
+            }
+
+    # ── OUTSIDE both try/except blocks ──
     # Step 3 — Summarize
     print("💬 Summarizing...")
     answer = summarize_result(user_question, sql, results)
@@ -369,10 +428,11 @@ def ask(user_question: str, session_id: str = None, conversation_history: list =
     if len(updated_history) > 20:
         updated_history = updated_history[-20:]
 
-        # Save updated history to Redis if session_id provided
+    # Save to Redis if session_id provided
     if session_id:
         save_history(session_id, updated_history)
         print(f"💾 Saved {len(updated_history)} messages to Redis for session {session_id[:8]}...")
+
     return {
         "answer": answer,
         "sql": sql,
