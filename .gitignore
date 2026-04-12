@@ -2,3 +2,5 @@ backend/venv/
 backend/.env
 node_modules/
 backend/pharma.db
+frontend/.vercel
+frontend/node_modules/
