@@ -87,91 +87,52 @@ def clean_sql(sql: str) -> str:
         sql = sql[:-3]
 
     return sql.strip()
-
 def is_casual_or_summary(question: str) -> str | None:
-    """
-    Pre-check before hitting the SQL pipeline.
-    Three things are hardcoded for reliability:
-      1. SQL injection — must never reach Claude
-      2. Off-topic — clear scope boundary
-      3. Unavailable data — known dataset limitations
-    Everything else — greetings, thanks, summaries — handled by Claude naturally.
-    Returns None if it's a real data question (passes through to SQL pipeline).
-    Returns a string if it should be answered directly without SQL.
-    """
-
+    """SQL injection guard only — everything else passes through."""
     question_lower = question.lower().strip()
-
-    # HARDCODED 1 — SQL injection guard
-    # Block destructive commands before they reach the pipeline
     dangerous_keywords = [
         "drop", "delete", "truncate", "insert", "update",
         "alter", "create", "replace", "password", "hack"
     ]
     if any(word in question_lower for word in dangerous_keywords):
-        return "I can only answer read-only questions about your pharma sales data. I cannot modify or delete any data."
+        return "I can only answer read-only questions about your pharma sales data."
+    return None
 
-    # HARDCODED 2 — Off-topic guard
-    # Block questions clearly outside pharma sales scope
-    off_topic_keywords = [
-        "weather", "capital city", "poem", "recipe", "sports score",
-        "movie", "music", "joke", "news", "stock price", "crypto",
-        "what is 2", "calculate", "translate", "write me a"
-    ]
-    if any(phrase in question_lower for phrase in off_topic_keywords):
-        return "I can only answer questions about your pharma sales data — reps, doctors, prescriptions, territories, and market share."
-
-   
-
-    # CLAUDE HANDLED — everything else
-    # Let Claude decide if this is a data question or a casual message
-    # This covers greetings, thanks, summaries, and any edge cases
+def is_casual(question: str) -> str | None:
+    """
+    Detects greetings and off-topic questions.
+    Separate from SQL generation so history stays clean.
+    No history passed — just the current message.
+    """
     response = client.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=150,
-        messages=[
-            {
-                "role": "user",
-                "content": f"""You are a pharma sales analytics assistant.
-
-The ONLY data available is:
-- Sales rep activity (calls, meetings, visit status, duration)
-- Doctor information (name, specialty, tier, territory)  
-- Prescription counts for GAZYVA (total and new Rx)
-- Hospital and clinic accounts with payor/insurance mix
-- Market share and LINE OF THERAPY PATIENT COUNTS per doctor per quarter
-- Territory and date information
-
-The user said: "{question}"
-
-Can this question be answered using ONLY the data listed above?
-
-If YES — respond with exactly: DATA_QUESTION
-If NO — explain in 1-2 sentences what isn't available and suggest what IS available.
-For greetings or thanks — respond warmly in 1-2 sentences.
-No markdown. Keep it short."""
-            }
-        ]
+        max_tokens=100,
+        messages=[{
+            "role": "user",
+            "content": (
+                f"You are a pharma sales analytics assistant.\n"
+                f"The user said: \"{question}\"\n\n"
+                f"Is this a data question about sales reps, doctors, "
+                f"prescriptions, territories, or market share?\n\n"
+                f"If YES — respond with exactly: DATA_QUESTION\n"
+                f"If NO — respond naturally in 1-2 sentences. "
+                f"For greetings respond warmly. "
+                f"For unavailable data explain what IS available. "
+                f"No markdown."
+            )
+        }]
     )
-
     result = response.content[0].text.strip()
-
-    # DATA_QUESTION means pass through to SQL pipeline
     if result == "DATA_QUESTION":
         return None
-
-    # Anything else is a direct response — no SQL needed
     return result
+
 def generate_sql(user_question: str, conversation_history: list = []) -> str:
     """
-    LAYER 1 — Claude reads the schema prompt + conversation history
-    + current question and returns a SQL query.
-
-    conversation_history: list of previous messages for follow-up context
-    Format: [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
+    LAYER 1 — SQL generation only.
+    Clean format — no casual detection mixed in.
+    History stays consistent for follow-up context.
     """
-
-    # Build messages — include history for conversational context
     messages = conversation_history + [
         {
             "role": "user",
@@ -180,7 +141,8 @@ def generate_sql(user_question: str, conversation_history: list = []) -> str:
                 f"The most recent complete quarter is Q4 2024. "
                 f"Data is available from August 2024 through December 2025.\n\n"
                 f"Convert this question to SQL: {user_question}"
-)        }
+            )
+        }
     ]
 
     response = client.messages.create(
@@ -190,17 +152,14 @@ def generate_sql(user_question: str, conversation_history: list = []) -> str:
             {
                 "type": "text",
                 "text": SCHEMA_PROMPT,
-                "cache_control": {"type": "ephemeral"}  # 90% cost saving on schema
+                "cache_control": {"type": "ephemeral"}
             }
         ],
         messages=messages
     )
 
     sql = response.content[0].text.strip()
-
-    # Clean any markdown formatting Claude might add
     sql = clean_sql(sql)
-
     return sql
 
 
@@ -337,25 +296,24 @@ def ask(user_question: str, session_id: str = None, conversation_history: list =
             "data": [],
             "conversation_history": conversation_history
         }
+    
+    # Step 0.5 — Casual detection (separate from SQL pipeline)
+    casual_response = is_casual(user_question)
+    if casual_response:
+        print(f"💬 Casual response: {casual_response}")
+        return {
+            "answer": casual_response,
+            "sql": "",
+            "data": [],
+            "conversation_history": conversation_history
+        }
 
     # Step 1 — Generate SQL (only reaches here if it's a real data question)
     print("⚙️  Generating SQL...")
     sql = generate_sql(user_question, conversation_history)
     print(f"📝 SQL:\n{sql}\n")
 
-    # # Step 2 — Execute SQL
-    # print("🗄️  Running query...")
-    # try:
-    #     results = run_sql(sql)
-    #     print(f"📊 Results: {len(results)} rows returned\n")
-    # except Exception as e:
-    #     print(f"❌ SQL Error: {e}")
-    #     return {
-    #         "answer": "I had trouble running that query. Try rephrasing your question or adding a specific time period like 'in Q4 2024'.",
-    #         "sql": sql,
-    #         "data": [],
-    #         "conversation_history": conversation_history
-    #     }
+
  # Step 2 — Execute SQL with one automatic retry
     print("🗄️  Running query...")
     try:
@@ -421,7 +379,9 @@ def ask(user_question: str, session_id: str = None, conversation_history: list =
     answer = summarize_result(user_question, sql, results)
     print(f"✅ Answer: {answer}\n")
 
-    # Step 4 — Update history
+# Step 4 — Update history
+    # Store in same format as generate_sql sends — consistent context for follow-ups
+    # Step 4 — Update history — simple clean format
     updated_history = conversation_history + [
         {"role": "user", "content": f"Convert this question to SQL: {user_question}"},
         {"role": "assistant", "content": sql}
