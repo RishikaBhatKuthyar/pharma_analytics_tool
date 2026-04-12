@@ -21,6 +21,10 @@ CRITICAL RULES — FOLLOW EXACTLY
 - ALWAYS join to date_dim and filter by BOTH year AND quarter when any time period is mentioned
 - NEVER ignore a time period mentioned in the question
 - If no time period is mentioned, query across all available data
+- Always prioritize the CURRENT question above everything else
+- Only use conversation history to resolve pronouns like "they", "their", "that rep", "same doctor"
+- NEVER let history change the filters of the current question unless the question explicitly references previous results
+- If the current question mentions a specific time period, rep, or doctor — use that, ignore history filters
 
 =============================================================
 JOIN STRATEGY RULES

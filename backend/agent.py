@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 import duckdb
 from anthropic import Anthropic
 from prompt import SCHEMA_PROMPT
+import redis
+import json
 
 # Load environment variables from .env file
 load_dotenv()
@@ -16,9 +18,44 @@ load_dotenv()
 # Initialize Anthropic client
 client = Anthropic()
 
+# Initialize Redis client
+# Connects to local Redis server on default port 6379
+# db=0 is the default Redis database
+redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+
 # Rate limiting — tracks requests per session to prevent cost explosion
 request_count = 0
 MAX_REQUESTS_PER_SESSION = 50  # hard limit per server session
+
+def get_history(session_id: str) -> list:
+    """
+    Fetches conversation history from Redis for a given session.
+    Returns empty list if no history exists yet for this session.
+    Each session is stored as a JSON string under key 'history:session_id'
+    """
+    try:
+        data = redis_client.get(f"history:{session_id}")
+        return json.loads(data) if data else []
+    except Exception as e:
+        print(f"Redis get error: {e}")
+        return []
+
+
+def save_history(session_id: str, history: list):
+    """
+    Saves updated conversation history to Redis.
+    Expires after 1 hour (3600 seconds) of inactivity.
+    If user comes back within 1 hour their history is still there.
+    After 1 hour Redis automatically deletes it.
+    """
+    try:
+        redis_client.setex(
+            f"history:{session_id}",  # key format: history:abc123
+            3600,                      # expire after 1 hour
+            json.dumps(history)        # store as JSON string
+        )
+    except Exception as e:
+        print(f"Redis save error: {e}")
 
 
 def get_db_connection():
@@ -50,20 +87,22 @@ def clean_sql(sql: str) -> str:
 
     return sql.strip()
 
-# Add this function to agent.py
-
 def is_casual_or_summary(question: str) -> str | None:
     """
-    Handles three cases before hitting the SQL pipeline:
-    1. Casual greetings — respond warmly
-    2. Summary requests — give data overview
-    3. Off-topic or dangerous questions — block politely
+    Pre-check before hitting the SQL pipeline.
+    Three things are hardcoded for reliability:
+      1. SQL injection — must never reach Claude
+      2. Off-topic — clear scope boundary
+      3. Unavailable data — known dataset limitations
+    Everything else — greetings, thanks, summaries — handled by Claude naturally.
+    Returns None if it's a real data question (passes through to SQL pipeline).
+    Returns a string if it should be answered directly without SQL.
     """
 
     question_lower = question.lower().strip()
 
-    # Fix 5 — SQL injection guard
-    # Block any question trying to modify or destroy data
+    # HARDCODED 1 — SQL injection guard
+    # Block destructive commands before they reach the pipeline
     dangerous_keywords = [
         "drop", "delete", "truncate", "insert", "update",
         "alter", "create", "replace", "password", "hack"
@@ -71,8 +110,8 @@ def is_casual_or_summary(question: str) -> str | None:
     if any(word in question_lower for word in dangerous_keywords):
         return "I can only answer read-only questions about your pharma sales data. I cannot modify or delete any data."
 
-    # Fix 1 — Off-topic guard
-    # Block questions clearly unrelated to pharma sales data
+    # HARDCODED 2 — Off-topic guard
+    # Block questions clearly outside pharma sales scope
     off_topic_keywords = [
         "weather", "capital city", "poem", "recipe", "sports score",
         "movie", "music", "joke", "news", "stock price", "crypto",
@@ -81,53 +120,46 @@ def is_casual_or_summary(question: str) -> str | None:
     if any(phrase in question_lower for phrase in off_topic_keywords):
         return "I can only answer questions about your pharma sales data — reps, doctors, prescriptions, territories, and market share."
 
-    # Fast greeting detection — no API call needed
-    greetings = [
-        "hi", "hello", "hey", "how are you", "good morning",
-        "good afternoon", "good evening", "thanks", "thank you",
-        "what's up", "sup"
-    ]
-    if any(question_lower.startswith(g) for g in greetings) or question_lower in greetings:
-        return "Hello! I'm your pharma sales analytics assistant. What would you like to know about your sales data — rep performance, doctor coverage, prescriptions, or market share?"
+   
 
-    # Summary request detection — no API call needed
-    summary_triggers = [
-        "summarize", "summary", "overview", "what data", "what do you have",
-        "what can you tell me", "tell me everything", "show me everything",
-        "what tables", "what information"
-    ]
-    if any(trigger in question_lower for trigger in summary_triggers):
-        today = datetime.now().strftime("%B %d, %Y")
-        return (
-            f"Here is an overview of the pharma sales data I have access to (as of {today}):\n\n"
-            f"Time range: August 2024 through December 2025\n\n"
-            f"- 9 sales reps across 3 territories\n"
-            f"- 30 healthcare providers (doctors) across Rheumatology, Nephrology, and Internal Medicine\n"
-            f"- Prescription data for GAZYVA (new Rx and total Rx)\n"
-            f"- Rep call and meeting activity with completion status\n"
-            f"- Hospital and clinic accounts with insurance/payor breakdowns\n"
-            f"- Market share and patient counts by quarter\n\n"
-            f"Try asking: which rep had the most calls, which Tier A doctors haven't been visited, "
-            f"payor mix for a specific hospital, or market share by doctor."
-        )
+    # CLAUDE HANDLED — everything else
+    # Let Claude decide if this is a data question or a casual message
+    # This covers greetings, thanks, summaries, and any edge cases
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=150,
+        messages=[
+            {
+                "role": "user",
+                "content": f"""You are a pharma sales analytics assistant.
 
-    # Fix 6 — Questions about data that doesn't exist
-    unavailable_data = [
-        "revenue", "salary", "cost", "price", "profit",
-        "patient name", "patient id", "side effect", "competitor",
-        "email", "phone", "address of rep", "social"
-    ]
-    if any(phrase in question_lower for phrase in unavailable_data):
-        return (
-            "That information isn't available in this dataset. "
-            "The data covers rep activity, doctor visits, GAZYVA prescriptions, "
-            "payor mix, and market share. Try asking about one of those."
-        )
+The ONLY data available is:
+- Sales rep activity (calls, meetings, visit status, duration)
+- Doctor information (name, specialty, tier, territory)  
+- Prescription counts for GAZYVA (total and new Rx)
+- Hospital and clinic accounts with payor/insurance mix
+- Market share and LINE OF THERAPY PATIENT COUNTS per doctor per quarter
+- Territory and date information
 
-    # Real data question — pass through to SQL pipeline
-    return None
-    
-    # Otherwise return the direct response
+The user said: "{question}"
+
+Can this question be answered using ONLY the data listed above?
+
+If YES — respond with exactly: DATA_QUESTION
+If NO — explain in 1-2 sentences what isn't available and suggest what IS available.
+For greetings or thanks — respond warmly in 1-2 sentences.
+No markdown. Keep it short."""
+            }
+        ]
+    )
+
+    result = response.content[0].text.strip()
+
+    # DATA_QUESTION means pass through to SQL pipeline
+    if result == "DATA_QUESTION":
+        return None
+
+    # Anything else is a direct response — no SQL needed
     return result
 def generate_sql(user_question: str, conversation_history: list = []) -> str:
     """
@@ -215,13 +247,21 @@ def summarize_result(user_question: str, sql: str, results: list) -> str:
 
     # Handle empty results with a helpful explanation instead of generic message
     if not results:
-        return (
-            f"No data was found for that question. This could be because: "
-            f"(1) the time period you asked about is outside the available data range "
-            f"(data only exists from August 2024 through December 2025), "
-            f"(2) the filter criteria returned no matches, or "
-            f"(3) try rephrasing your question with a specific time period like 'in Q4 2024'."
+        empty_prompt = f"""
+    The user asked: "{user_question}"
+
+    The database query ran successfully but returned zero results.
+    Give a short 1-2 sentence plain English explanation of what this likely means.
+    If asking about unvisited doctors and getting zero results — it likely means all doctors were visited.
+    If asking about a time period outside August 2024 to December 2025 — say data is not available.
+    Do not mention SQL or databases. No markdown. Be specific to the question asked.
+    """
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=150,
+            messages=[{"role": "user", "content": empty_prompt}]
         )
+        return response.content[0].text.strip()
 
     # Limit result size sent to Claude to avoid token overflow
     # If more than 50 rows, summarize the first 50 and note there are more
@@ -260,8 +300,18 @@ Never ask for clarification. Always give a definitive answer based on what the d
 
     return response.content[0].text.strip()
 
-
-def ask(user_question: str, conversation_history: list = []) -> dict:
+def ask(user_question: str, session_id: str = None, conversation_history: list = []) -> dict:
+    """
+    Main pipeline function.
+    If session_id provided — uses Redis for history (production mode)
+    If no session_id — uses passed conversation_history (backwards compatible)
+    """
+    # If session_id provided fetch history from Redis
+    # Otherwise fall back to passed conversation_history
+    if session_id:
+        conversation_history = get_history(session_id)
+        print(f"📋 Loaded {len(conversation_history)} messages from Redis for session {session_id[:8]}...")
+# def ask(user_question: str, conversation_history: list = []) -> dict:
     global request_count
 
     # Rate limit check
@@ -319,6 +369,10 @@ def ask(user_question: str, conversation_history: list = []) -> dict:
     if len(updated_history) > 20:
         updated_history = updated_history[-20:]
 
+        # Save updated history to Redis if session_id provided
+    if session_id:
+        save_history(session_id, updated_history)
+        print(f"💾 Saved {len(updated_history)} messages to Redis for session {session_id[:8]}...")
     return {
         "answer": answer,
         "sql": sql,

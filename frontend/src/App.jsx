@@ -183,11 +183,25 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef(null);
 
-  // Load conversation history from localStorage on startup
-  const [conversationHistory, setConversationHistory] = useState(() => {
-    const saved = localStorage.getItem("pharma_chat_history");
-    return saved ? JSON.parse(saved) : [];
+  // // Load conversation history from localStorage on startup
+  // const [conversationHistory, setConversationHistory] = useState(() => {
+  //   const saved = localStorage.getItem("pharma_chat_history");
+  //   return saved ? JSON.parse(saved) : [];
+  // });
+  // ── NEW session ID for Redis-based history ──
+// Generated once per browser — stored in localStorage so it persists across refreshes
+// This ID is sent with every request so the backend can fetch history from Redis
+  const [sessionId] = useState(() => {
+      const existing = localStorage.getItem("pharma_session_id");
+      if (existing) return existing;
+      const newId = crypto.randomUUID();
+      localStorage.setItem("pharma_session_id", newId);
+      return newId;
   });
+
+  // Keep conversationHistory state for backwards compatibility
+  // But it won't be used when session_id is sent
+  const [conversationHistory, setConversationHistory] = useState([]);
 
   // Auto scroll to bottom when new messages arrive
   useEffect(() => {
@@ -230,7 +244,8 @@ export default function App() {
       // Send question AND conversation history to backend
       const response = await axios.post(`${API_URL}/ask`, {
         question: q,
-        conversation_history: conversationHistory,
+        session_id: sessionId,
+        // conversation_history: conversationHistory,
       });
 
       clearTimeout(timeoutId);
@@ -281,11 +296,22 @@ export default function App() {
           <button
             style={styles.clearButton}
             onClick={() => {
+              const newId = crypto.randomUUID();
+
               setMessages([]);
               setConversationHistory([]);
-              localStorage.removeItem("pharma_chat_history");
-              localStorage.removeItem("pharma_chat_messages");
-            }}
+              // localStorage.removeItem("pharma_chat_history");
+              // Clear Redis session — generate new session ID on next load
+
+            localStorage.removeItem("pharma_chat_messages");
+            localStorage.removeItem("pharma_session_id");
+            
+            // Save new session ID to localStorage
+            localStorage.setItem("pharma_session_id", newId);
+            
+            // Force page refresh so sessionId state picks up the new ID
+            window.location.reload();
+          }}
           >
             Clear Chat
           </button>
