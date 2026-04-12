@@ -19,10 +19,11 @@ load_dotenv()
 client = Anthropic()
 
 # Initialize Redis client
-# Connects to local Redis server on default port 6379
-# db=0 is the default Redis database
-redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
 
+# Connect to Redis — uses REDIS_URL environment variable in production
+# Falls back to localhost for local development
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 # Rate limiting — tracks requests per session to prevent cost explosion
 request_count = 0
 MAX_REQUESTS_PER_SESSION = 50  # hard limit per server session
