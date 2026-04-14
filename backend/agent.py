@@ -6,14 +6,36 @@
 import os
 from datetime import datetime
 from dotenv import load_dotenv
+load_dotenv()
 import duckdb
 from anthropic import Anthropic
 from prompt import SCHEMA_PROMPT
 import redis
 import json
+import time
 
-# Load environment variables from .env file
-load_dotenv()
+import requests
+
+def track(metric_name: str, value: float):
+    """Send metric to Datadog."""
+    try:
+        requests.post(
+            "https://api.us5.datadoghq.com/api/v1/series",
+            headers={
+                "Content-Type": "application/json",
+                "DD-API-KEY": os.getenv("DATADOG_API_KEY", "")
+            },
+            json={"series": [{
+                "metric": metric_name,
+                "points": [[int(time.time()), value]],
+                "type": "gauge",
+                "tags": ["app:pharma-analytics"]
+            }]},
+            timeout=2
+        )
+    except:
+        pass
+
 
 # Initialize Anthropic client
 client = Anthropic()
@@ -27,6 +49,8 @@ redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 # Rate limiting — tracks requests per session to prevent cost explosion
 request_count = 0
 MAX_REQUESTS_PER_SESSION = 50  # hard limit per server session
+
+
 
 def get_history(session_id: str) -> list:
     """
@@ -122,7 +146,7 @@ def is_casual(question: str) -> str | None:
             )
         }]
     )
-        # Track casual check cost
+    # Track casual check cost
     input_tokens = response.usage.input_tokens
     output_tokens = response.usage.output_tokens
     cost = (input_tokens * 0.00000025) + (output_tokens * 0.00000125)
@@ -168,6 +192,11 @@ def generate_sql(user_question: str, conversation_history: list = []) -> str:
     output_tokens = response.usage.output_tokens
     cost = (input_tokens * 0.00000025) + (output_tokens * 0.00000125)
     print(f"💰 Layer 1 — {input_tokens} in / {output_tokens} out — ${cost:.6f}")
+
+    # Track metrics in Datadog
+    track('pharma.cost.layer1', cost)
+    track('pharma.tokens.input', input_tokens)
+    track('pharma.tokens.output', output_tokens)
     sql = response.content[0].text.strip()
     sql = clean_sql(sql)
     return sql
@@ -181,7 +210,7 @@ def run_sql(sql: str) -> list:
     """
     conn = get_db_connection()
 
-    try:
+    try:  
         result = conn.execute(sql).fetchdf()
         conn.close()
         return result.to_dict(orient='records')
@@ -273,14 +302,24 @@ Never ask for clarification. Always give a definitive answer based on what the d
     cost = (input_tokens * 0.00000025) + (output_tokens * 0.00000125)
     print(f"💰 Layer 2 — {input_tokens} in / {output_tokens} out — ${cost:.6f}")
 
+    # Track metrics in Datadog
+    track('pharma.cost.layer2', cost)
+    track('pharma.tokens.input', input_tokens)
+    track('pharma.tokens.output', output_tokens)
+
+
+
     return response.content[0].text.strip()
 
 def ask(user_question: str, session_id: str = None, conversation_history: list = []) -> dict:
+
     """
     Main pipeline function.
     If session_id provided — uses Redis for history (production mode)
     If no session_id — uses passed conversation_history (backwards compatible)
     """
+    start_time = time.time()
+
     # If session_id provided fetch history from Redis
     # Otherwise fall back to passed conversation_history
     if session_id:
@@ -329,7 +368,7 @@ def ask(user_question: str, session_id: str = None, conversation_history: list =
     print(f"📝 SQL:\n{sql}\n")
 
 
- # Step 2 — Execute SQL with one automatic retry
+    # Step 2 — Execute SQL with one automatic retry
     print("🗄️  Running query...")
     try:
         results = run_sql(sql)
@@ -337,7 +376,10 @@ def ask(user_question: str, session_id: str = None, conversation_history: list =
 
     except Exception as e:
         print(f"❌ SQL Error on first attempt: {e}")
+        track('pharma.errors.sql', 1)  
+
         print("🔄 Retrying with error context...")
+
 
         retry_messages = conversation_history + [
             {
@@ -381,11 +423,15 @@ def ask(user_question: str, session_id: str = None, conversation_history: list =
 
         except Exception as retry_error:
             print(f"❌ Retry also failed: {retry_error}")
+            track('pharma.errors.retry_failed', 1)
+
+
             return {
                 "answer": "I had trouble running that query even after correcting it. Try rephrasing your question or being more specific.",
                 "sql": sql,
                 "data": [],
                 "conversation_history": conversation_history
+
             }
 
     # ── OUTSIDE both try/except blocks ──
@@ -410,6 +456,11 @@ def ask(user_question: str, session_id: str = None, conversation_history: list =
         print(f"💾 Saved {len(updated_history)} messages to Redis for session {session_id[:8]}...")
     print(f"📊 Question complete — session {session_id[:8] if session_id else 'N/A'}")
 
+    # Track metrics in Datadog
+    duration = time.time() - start_time
+    track('pharma.questions.total', 1)
+    track('pharma.question.latency', duration)
+    print(f"📊 Total latency: {duration:.2f}s")
     return {
         "answer": answer,
         "sql": sql,
