@@ -122,6 +122,12 @@ def is_casual(question: str) -> str | None:
             )
         }]
     )
+        # Track casual check cost
+    input_tokens = response.usage.input_tokens
+    output_tokens = response.usage.output_tokens
+    cost = (input_tokens * 0.00000025) + (output_tokens * 0.00000125)
+    print(f"💰 Casual check — {input_tokens} in / {output_tokens} out — ${cost:.6f}")
+
     result = response.content[0].text.strip()
     if result == "DATA_QUESTION":
         return None
@@ -157,7 +163,11 @@ def generate_sql(user_question: str, conversation_history: list = []) -> str:
         ],
         messages=messages
     )
-
+    # Track Layer 1 cost
+    input_tokens = response.usage.input_tokens
+    output_tokens = response.usage.output_tokens
+    cost = (input_tokens * 0.00000025) + (output_tokens * 0.00000125)
+    print(f"💰 Layer 1 — {input_tokens} in / {output_tokens} out — ${cost:.6f}")
     sql = response.content[0].text.strip()
     sql = clean_sql(sql)
     return sql
@@ -257,6 +267,11 @@ Never ask for clarification. Always give a definitive answer based on what the d
             }
         ]
     )
+    # Track Layer 2 cost
+    input_tokens = response.usage.input_tokens
+    output_tokens = response.usage.output_tokens
+    cost = (input_tokens * 0.00000025) + (output_tokens * 0.00000125)
+    print(f"💰 Layer 2 — {input_tokens} in / {output_tokens} out — ${cost:.6f}")
 
     return response.content[0].text.strip()
 
@@ -393,6 +408,7 @@ def ask(user_question: str, session_id: str = None, conversation_history: list =
     if session_id:
         save_history(session_id, updated_history)
         print(f"💾 Saved {len(updated_history)} messages to Redis for session {session_id[:8]}...")
+    print(f"📊 Question complete — session {session_id[:8] if session_id else 'N/A'}")
 
     return {
         "answer": answer,

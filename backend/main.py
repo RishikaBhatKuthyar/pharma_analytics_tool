@@ -3,14 +3,31 @@
 # Handles conversation history for follow-up questions.
 # Includes timeout handling and rate limiting.
 
+# main.py
+import os
+import asyncio
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
-import asyncio
 from agent import ask
 import uvicorn
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.starlette import StarletteIntegration
 
+sentry_sdk.init(
+    dsn=os.getenv("SENTRY_DSN"),
+    integrations=[
+        StarletteIntegration(),
+        FastApiIntegration(),
+    ],
+    traces_sample_rate=0.1,
+    environment="production"
+)
 app = FastAPI(
     title="Pharma Analytics Tool",
     description="Natural language interface for pharma sales data",
@@ -56,6 +73,9 @@ class AnswerResponse(BaseModel):
 def health_check():
     return {"status": "running", "message": "Pharma Analytics API is live"}
 
+@app.get("/sentry-test")
+async def sentry_test():
+    raise Exception("Sentry is working!")
 
 
 # Main endpoint
