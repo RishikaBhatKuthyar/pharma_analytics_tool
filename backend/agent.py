@@ -89,7 +89,7 @@ def get_db_connection():
     Read-only so nothing can accidentally modify the data.
     """
     db_path = os.path.join(os.path.dirname(__file__), 'pharma.db')
-    return duckdb.connect(database=db_path, read_only=True)
+    return duckdb.connect(database=db_path)
 
 
 def clean_sql(sql: str) -> str:
@@ -200,24 +200,34 @@ def generate_sql(user_question: str, conversation_history: list = []) -> str:
     sql = response.content[0].text.strip()
     sql = clean_sql(sql)
     return sql
-
-
 def run_sql(sql: str) -> list:
-    """
-    Executes the SQL query against DuckDB.
-    Returns results as a list of dictionaries.
-    Raises a descriptive error if SQL fails.
-    """
     conn = get_db_connection()
-
-    try:  
-        result = conn.execute(sql).fetchdf()
+    try:
+        result = conn.execute(sql)
+        columns = [desc[0] for desc in result.description]
+        rows = result.fetchall()
         conn.close()
-        return result.to_dict(orient='records')
-
+        return [dict(zip(columns, row)) for row in rows]
     except Exception as e:
         conn.close()
         raise Exception(f"SQL execution failed: {str(e)}\nSQL was: {sql}")
+
+# def run_sql(sql: str) -> list:
+#     """
+#     Executes the SQL query against DuckDB.
+#     Returns results as a list of dictionaries.
+#     Raises a descriptive error if SQL fails.
+#     """
+#     conn = get_db_connection()
+
+#     try:  
+#         result = conn.execute(sql).fetchdf()
+#         conn.close()
+#         return result.to_dict(orient='records')
+
+#     except Exception as e:
+#         conn.close()
+#         raise Exception(f"SQL execution failed: {str(e)}\nSQL was: {sql}")
 
 def clean_results(results: list) -> list:
     """
