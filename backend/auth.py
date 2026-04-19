@@ -8,7 +8,7 @@ import uuid
 
 from fastapi import Depends, HTTPException, Header
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt as bcrypt_lib
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -18,7 +18,6 @@ SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-this-in-production-please")
 ALGORITHM = "HS256"
 TOKEN_EXPIRE_HOURS = 24
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # ── Pydantic models ────────────────────────────────────────────────────────
 class LoginRequest(BaseModel):
@@ -37,7 +36,10 @@ class TokenResponse(BaseModel):
 
 # ── Core auth functions ────────────────────────────────────────────────────
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain[:72], hashed)
+    return bcrypt_lib.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+
+def hash_password(password: str) -> str:
+    return bcrypt_lib.hashpw(password.encode("utf-8"), bcrypt_lib.gensalt()).decode("utf-8")
 
 def create_token(user_id: str, email: str) -> str:
     payload = {
@@ -88,7 +90,7 @@ def register_handler(request: RegisterRequest, db: Session) -> TokenResponse:
         user_id=user_id,
         email=request.email,
         name=request.name,
-        hashed_password=pwd_context.hash(request.password[:72]),
+        hashed_password=hash_password(request.password),
     )
     db.add(new_user)
     db.commit()
