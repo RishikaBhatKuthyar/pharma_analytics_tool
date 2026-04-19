@@ -37,7 +37,7 @@ class TokenResponse(BaseModel):
 
 # ── Core auth functions ────────────────────────────────────────────────────
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    return pwd_context.verify(plain[:72], hashed)
 
 def create_token(user_id: str, email: str) -> str:
     payload = {
@@ -88,7 +88,7 @@ def register_handler(request: RegisterRequest, db: Session) -> TokenResponse:
         user_id=user_id,
         email=request.email,
         name=request.name,
-        hashed_password=pwd_context.hash(request.password),
+        hashed_password=pwd_context.hash(request.password[:72]),
     )
     db.add(new_user)
     db.commit()
