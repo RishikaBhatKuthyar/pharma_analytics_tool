@@ -169,11 +169,107 @@ function SuggestedQuestions({ onSelect }) {
     </div>
   );
 }
+  // ─── Login Screen Component ──────────────────────────────────────────────────
+
+const loginInputStyle = {
+  backgroundColor: "#0f1117",
+  border: "1px solid #2a2d36",
+  color: "#e8e6e0",
+  padding: "10px 14px",
+  borderRadius: "8px",
+  fontSize: "14px",
+  outline: "none",
+};
+
+function LoginScreen({ onLogin }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [isRegister, setIsRegister] = useState(false);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async () => {
+    if (!email.trim() || !password.trim()) return;
+    setLoading(true);
+    setError("");
+    try {
+      const endpoint = isRegister ? "/register" : "/login";
+      const body = isRegister ? { email, password, name } : { email, password };
+      const res = await axios.post(`${API_URL}${endpoint}`, body);
+      onLogin(res.data.token, res.data.name);
+    } catch (err) {
+      setError(err.response?.data?.detail || "Something went wrong.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center",
+      justifyContent: "center", height: "100vh", backgroundColor: "#0f1117", gap: "24px" }}>
+      <h1 style={{ color: "#e8c97a", fontFamily: "Georgia, serif", fontSize: "28px" }}>
+        ⚗️ Pharma Analytics
+      </h1>
+      <div style={{ backgroundColor: "#1a1d26", border: "1px solid #2a2d36",
+        borderRadius: "12px", padding: "32px", width: "340px", display: "flex",
+        flexDirection: "column", gap: "14px" }}>
+        <h2 style={{ color: "#e8e6e0", margin: 0, fontSize: "18px", fontFamily: "Georgia, serif" }}>
+          {isRegister ? "Create account" : "Sign in"}
+        </h2>
+        {isRegister && (
+          <input placeholder="Your name" value={name}
+            onChange={e => setName(e.target.value)} style={loginInputStyle} />
+        )}
+        <input placeholder="Email" type="email" value={email}
+          onChange={e => setEmail(e.target.value)} style={loginInputStyle} />
+        <input placeholder="Password" type="password" value={password}
+          onChange={e => setPassword(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && handleSubmit()}
+          style={loginInputStyle} />
+        {error && <p style={{ color: "#f87171", fontSize: "13px", margin: 0 }}>{error}</p>}
+        <button onClick={handleSubmit} disabled={loading}
+          style={{ backgroundColor: "#e8c97a", color: "#0f1117", border: "none",
+            padding: "12px", borderRadius: "8px", fontSize: "14px",
+            fontWeight: "700", cursor: "pointer", opacity: loading ? 0.6 : 1 }}>
+          {loading ? "..." : isRegister ? "Create account" : "Sign in"}
+        </button>
+        <button onClick={() => { setIsRegister(!isRegister); setError(""); }}
+          style={{ background: "none", border: "none", color: "#6b7280",
+            fontSize: "13px", cursor: "pointer", padding: 0 }}>
+          {isRegister ? "Already have an account? Sign in" : "No account? Register"}
+        </button>
+      </div>
+      <p style={{ color: "#6b7280", fontSize: "12px" }}>
+        Demo: demo@pharmademo.com / pharma2024
+      </p>
+    </div>
+  );
+}
+
 
 // ─── Main App Component ──────────────────────────────────────────────────────
 
 export default function App() {
   // Load messages from localStorage on startup — persists across page refresh
+  const [authToken, setAuthToken] = useState(() => localStorage.getItem("pharma_auth_token"));
+  const [userName, setUserName] = useState(() => localStorage.getItem("pharma_user_name") || "");
+
+  const handleLogin = (token, name) => {
+    localStorage.setItem("pharma_auth_token", token);
+    localStorage.setItem("pharma_user_name", name);
+    setAuthToken(token);
+    setUserName(name);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem("pharma_auth_token");
+    localStorage.removeItem("pharma_user_name");
+    localStorage.removeItem("pharma_chat_messages");
+    localStorage.removeItem("pharma_session_id");
+    setAuthToken(null);
+    setMessages([]);
+};
   const [messages, setMessages] = useState(() => {
     const saved = localStorage.getItem("pharma_chat_messages");
     return saved ? JSON.parse(saved) : [];
@@ -242,11 +338,18 @@ export default function App() {
 
     try {
       // Send question AND conversation history to backend
-      const response = await axios.post(`${API_URL}/ask`, {
-        question: q,
-        session_id: sessionId,
-        // conversation_history: conversationHistory,
-      });
+      const response = await axios.post(
+        `${API_URL}/ask`,
+        {
+          question: q,
+          session_id: sessionId,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${authToken}`,
+          },
+        }
+      );
 
       clearTimeout(timeoutId);
 
@@ -284,38 +387,46 @@ export default function App() {
       handleSubmit();
     }
   };
+  if (!authToken) return <LoginScreen onLogin={handleLogin} />;
 
   return (
+
     <div style={styles.appContainer}>
 
     {/* Header */}
     <div style={styles.header}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h1 style={styles.headerTitle}>⚗️ Pharma Analytics</h1>
-        {messages.length > 0 && (
-          <button
-            style={styles.clearButton}
-            onClick={() => {
-              const newId = crypto.randomUUID();
-
-              setMessages([]);
-              setConversationHistory([]);
-              // localStorage.removeItem("pharma_chat_history");
-              // Clear Redis session — generate new session ID on next load
-
-            localStorage.removeItem("pharma_chat_messages");
-            localStorage.removeItem("pharma_session_id");
-            
-            // Save new session ID to localStorage
-            localStorage.setItem("pharma_session_id", newId);
-            
-            // Force page refresh so sessionId state picks up the new ID
-            window.location.reload();
-          }}
+                <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                  <span style={{ color: "#6b7280", fontSize: "12px" }}>👤 {userName}</span>
+                  <button style={styles.clearButton} onClick={handleLogout}>
+                    Sign out
+                  </button>
+                  {messages.length > 0 && (
+                  <button
+                    style={styles.clearButton}
+            onClick={async () => {
+          const newId = crypto.randomUUID();
+          // Clear Redis history for this user
+          try {
+            await axios.post(`${API_URL}/clear-history`, {}, {
+              headers: { Authorization: `Bearer ${authToken}` }
+            });
+          } catch (e) {
+            console.error("Failed to clear Redis history", e);
+          }
+          setMessages([]);
+          setConversationHistory([]);
+          localStorage.removeItem("pharma_chat_messages");
+          localStorage.removeItem("pharma_session_id");
+          localStorage.setItem("pharma_session_id", newId);
+          window.location.reload();
+        }}
           >
             Clear Chat
           </button>
         )}
+        </div>
       </div>
       <p style={styles.headerSubtitle}>
         Ask anything about your sales data in plain English

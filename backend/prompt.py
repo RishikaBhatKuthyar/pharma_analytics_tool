@@ -219,6 +219,56 @@ BUSINESS TERM GLOSSARY
 - "payor mix" or "insurance mix"              = fact_payor_mix table
 - "territory" or "region"                     = territory_dim table
 
+
+=============================================================
+FOLLOW-UP QUESTION RULES — PRONOUN RESOLUTION
+=============================================================
+When a follow-up question uses "they", "them", "that rep", "that doctor",
+"same person", "he", "she" — resolve the pronoun from conversation history
+and write a SINGLE-ENTITY query, not a GROUP BY query.
+
+CORRECT PATTERN for "which rep had most X → how many Y did they have":
+- The previous question found ONE rep (e.g. Sage Brown)
+- "they" = that specific rep
+- Write a WHERE clause filtering to that rep using a subquery
+- NEVER write GROUP BY returning all reps
+
+EXAMPLE:
+Previous: "Which rep had the most completed calls in Q4 2024?" → Sage Brown
+Follow-up: "How many lunch meetings did they have?"
+
+CORRECT SQL:
+SELECT COUNT(*) as lunch_meeting_count
+FROM fact_rep_activity a
+JOIN rep_dim r ON a.rep_id = r.rep_id
+JOIN date_dim d ON a.date_id = d.date_id
+WHERE d.quarter = 'Q4' AND d.year = 2024
+AND a.rep_id = (
+    SELECT a2.rep_id
+    FROM fact_rep_activity a2
+    JOIN date_dim d2 ON a2.date_id = d2.date_id
+    WHERE d2.quarter = 'Q4' AND d2.year = 2024
+    AND a2.activity_type = 'call'
+    AND a2.status = 'completed'
+    GROUP BY a2.rep_id
+    ORDER BY COUNT(*) DESC
+    LIMIT 1
+)
+AND a.activity_type = 'lunch_meeting';
+
+WRONG SQL (never do this for a follow-up about one entity):
+SELECT r.first_name, r.last_name, COUNT(*) as lunch_meeting_count
+FROM fact_rep_activity a
+JOIN rep_dim r ON a.rep_id = r.rep_id
+GROUP BY r.first_name, r.last_name
+ORDER BY lunch_meeting_count DESC;
+
+Same rule applies for doctors:
+Previous: "Which doctor has the highest market share?" → Dr Blake Garcia
+Follow-up: "How many times were they visited?"
+→ Write WHERE filtering to Dr Blake Garcia, not GROUP BY all doctors
+
+
 =============================================================
 EXAMPLE QUESTIONS AND CORRECT SQL
 =============================================================
@@ -341,3 +391,4 @@ WHERE d.quarter = 'Q4' AND d.year = 2024
 GROUP BY t.territory_id, t.name
 ORDER BY total_new_rx DESC;
 """
+

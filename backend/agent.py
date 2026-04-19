@@ -48,7 +48,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 # Rate limiting — tracks requests per session to prevent cost explosion
 request_count = 0
-MAX_REQUESTS_PER_SESSION = 50  # hard limit per server session
+MAX_REQUESTS_PER_USER = 50
 
 
 
@@ -335,18 +335,20 @@ def ask(user_question: str, session_id: str = None, conversation_history: list =
     if session_id:
         conversation_history = get_history(session_id)
         print(f"📋 Loaded {len(conversation_history)} messages from Redis for session {session_id[:8]}...")
-# def ask(user_question: str, conversation_history: list = []) -> dict:
-    global request_count
-
-    # Rate limit check
-    request_count += 1
-    if request_count > MAX_REQUESTS_PER_SESSION:
-        return {
-            "answer": "Request limit reached for this session. Please restart the server.",
-            "sql": "",
-            "data": [],
-            "conversation_history": conversation_history
-        }
+    # def ask(user_question: str, conversation_history: list = []) -> dict:
+    # Per-user rate limiting via Redis
+    if session_id:
+        rate_key = f"rate:{session_id}"
+        count = redis_client.incr(rate_key)
+        if count == 1:
+            redis_client.expire(rate_key, 86400)  # resets every 24 hours
+        if count > MAX_REQUESTS_PER_USER:
+            return {
+                "answer": "You've reached your daily limit of 50 questions. Resets in 24 hours.",
+                "sql": "",
+                "data": [],
+                "conversation_history": conversation_history
+            }
 
     print(f"\n🔍 Question: {user_question}")
 

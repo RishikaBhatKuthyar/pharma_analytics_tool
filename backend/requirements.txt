@@ -50,3 +50,7 @@ xxhash==3.6.0
 zstandard==0.25.0
 sentry-sdk[fastapi]==2.58.0
 datadog==0.52.1
+python-jose[cryptography]
+passlib[bcrypt]
+sqlalchemy
+psycopg2-binary
